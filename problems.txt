@@ -1,0 +1,143 @@
+CiteBridge 项目待改进任务清单（按优先级排序）
+
+任务 1：完善 Cursor 侧对 Zotero 导入 payload 的输入校验
+问题
+当前 validateImportPayload() 只做了非常基础的字段检查，没有对 items 内部字段、嵌套对象、字符串长度、类型一致性做严格校验。
+目标
+确保所有进入导入流程的数据都符合预期格式，避免畸形 JSON、异常字段、超长文本影响后续导入、BibTeX 写入和索引更新。
+修改范围
+- packages/shared/src/protocol.ts
+- packages/shared/src/schema.ts
+- packages/cursor-extension/src/services/inboxService.ts
+- packages/cursor-extension/src/services/importService.ts
+建议改动
+- 为 ImportPayload、ZoteroPayloadItem、Attachment、Creator 建立更完整的结构校验。
+- 校验每个字段的类型、可选性、长度上限。
+- 对 items[].creators、items[].attachments 做逐项检查。
+- 对 projectToken、requestId、targetProjectId、itemKey 等关键字段增加格式校验。
+- 校验失败时返回明确错误信息，不要只报“payload invalid”。
+验收标准
+- 构造缺字段、错类型、超长字段、空数组、异常嵌套对象的 payload 时，导入会被明确拒绝，并提示具体原因。
+- 合法 payload 能正常导入。
+- 不应因为异常输入导致扩展崩溃。
+
+任务 2：将关键失败从“静默失败”改成“可见失败”
+问题
+当前多处逻辑捕获异常后直接 return undefined 或空值，用户容易误以为成功，实际上 PDF、BibTeX、注册表等步骤可能失败。
+目标
+让关键失败在 UI 或日志中可见，便于用户排查和维护。
+修改范围
+- packages/cursor-extension/src/services/pdfService.ts
+- packages/cursor-extension/src/services/bibService.ts
+- packages/cursor-extension/src/services/inboxService.ts
+- packages/cursor-extension/src/services/projectService.ts
+建议改动
+- 对关键步骤增加明确错误提示或警告。
+- 次要失败可以继续降级，但必须记录原因。
+- 建议统一错误输出格式，带上 projectId、requestId、文件路径、失败步骤。
+- 保留用户可见提示和开发日志两层信息。
+验收标准
+- 当 PDF 复制失败、BibTeX 拉取失败、JSON 解析失败、注册表读取失败时，用户能看到明确提示。
+- 日志中能定位失败环节。
+- 不影响正常成功流程。
+
+任务 3：减少 payload 中暴露的本地绝对路径
+问题
+Zotero 侧序列化附件时会把 PDF 的绝对路径写入 payload，容易暴露本机目录结构，也降低可移植性。
+目标
+让跨插件数据交换保持“最小必要信息”原则，尽量减少无关本地路径暴露。
+修改范围
+- packages/zotero-plugin/content/citebridge.js
+- packages/cursor-extension/src/services/pdfService.ts
+- packages/shared/src/schema.ts
+建议改动
+- 优先只传文件名、Zotero 识别信息或可重新解析的标识。
+- 如果仍需要路径，尽量限定为临时使用，不要长期落盘到持久文件。
+- 更新对应 schema 和说明文档。
+验收标准
+- payload 中不再默认包含完整本地绝对路径，或已明确说明其必要性。
+- PDF 复制流程仍可正常工作。
+- 本地隐私暴露面减少。
+
+任务 4：增强 BibTeX 生成与字段清洗
+问题
+当前 BibTeX 生成主要靠简单字符串拼接，escapeBibtex() 只移除了大括号，对特殊字符、控制字符、超长文本的处理不够完整。
+目标
+提升 refs.bib 的稳定性与兼容性，减少不规范 BibTeX 导致的 LaTeX 问题。
+修改范围
+- packages/cursor-extension/src/shared/bibtex.ts
+- packages/cursor-extension/src/services/bibService.ts
+建议改动
+- 对 title、author、journal、booktitle、doi、url 等字段做更完整转义和标准化。
+- 清洗换行、制表符、控制字符、空白折叠。
+- 对超长字段做合理截断或保守处理。
+- 对已有 key 冲突、DOI 冲突、内容冲突增加更明确的处理策略。
+验收标准
+- 常见特殊字符不会破坏 BibTeX 结构。
+- 生成的条目在 LaTeX 中可稳定引用。
+- 重复导入不会轻易污染 refs.bib。
+
+任务 5：完善 PDF 复制冲突与失败处理
+问题
+copyPdf() 对复制失败、目标文件已存在、源文件不可读等情况缺少明确处理。
+目标
+让 PDF 复制行为可预测、可排查、可恢复。
+修改范围
+- packages/cursor-extension/src/services/pdfService.ts
+建议改动
+- 区分“目标已存在”“源文件不可读”“复制失败”“路径越界”等情况。
+- 定义目标文件存在时的策略：跳过、覆盖、改名。
+- 把复制结果显式返回给上层。
+- 在 UI 或日志中给出失败原因。
+验收标准
+- 同名 PDF 冲突时行为明确。
+- 复制失败时有清晰提示。
+- 不会悄悄失败。
+
+任务 6：增加注册表和索引文件的恢复机制
+问题
+~/.citebridge/projects.json 和项目内 .citebridge/config.json、index.json 是核心状态文件，但当前对损坏文件的恢复能力较弱。
+目标
+避免因为 JSON 文件损坏而让整个插件不可用。
+修改范围
+- packages/cursor-extension/src/services/projectService.ts
+- packages/cursor-extension/src/services/registryService.ts
+- packages/cursor-extension/src/services/inboxService.ts
+- packages/cursor-extension/src/services/importService.ts
+建议改动
+- 增加损坏检测。
+- 提供重建注册表/索引的能力。
+- 写入前可保留简单备份。
+- 读取失败时给出修复建议。
+验收标准
+- JSON 文件损坏后，插件可以提示并引导恢复。
+- 能通过命令重建索引或注册表。
+- 不会因为单个状态文件损坏而完全失效。
+
+任务 7：提升状态可观测性
+问题
+当前项目缺少足够清晰的运行状态展示，例如当前激活项目、最近导入时间、待处理请求数等。
+目标
+让用户更容易理解插件是否正常工作，出问题时也更容易定位。
+修改范围
+- packages/cursor-extension/src/extension.ts
+- packages/cursor-extension/src/services/inboxService.ts
+- packages/cursor-extension/src/services/projectService.ts
+- packages/zotero-plugin/content/citebridge.js
+建议改动
+- 显示当前激活项目、最近同步时间、导入数量等信息。
+- 日志统一带 requestId 和 projectId。
+- 增加“刷新 inbox”“重新扫描”“重建索引”等明确命令。
+验收标准
+- 用户能直观看到插件状态。
+- 出问题时能追踪到具体 requestId 或项目。
+- 不需要翻日志也能判断是否成功。
+
+实施顺序建议
+1. 完整输入校验
+2. 关键错误可见化
+3. 减少绝对路径暴露
+4. 改善 BibTeX 清洗与生成
+5. 完善 PDF 复制冲突处理
+6. 增加注册表/索引恢复机制
+7. 提升状态可观测性

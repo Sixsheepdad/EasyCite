@@ -1,0 +1,1604 @@
+# CiteBridge 项目构建与实现文档
+
+## 1. 项目目标
+
+本项目实现一个面向 LaTeX 论文写作的文献引用桥接工具，名称暂定为 `CiteBridge`。
+
+项目由三部分组成：
+
+1. Cursor 扩展：安装在 Cursor 中，用于管理当前 LaTeX 项目的文献库、维护 `.bib` 文件、显示文献侧边栏、支持拖拽插入引用。
+2. Zotero 插件：安装在 Zotero 中，用于在 Zotero 文献列表右键菜单中增加 `Send to Cursor Project` 功能。
+3. 通信协议：用于 Zotero 插件和 Cursor 扩展之间传递文献信息、PDF 附件路径、目标论文项目等信息。
+
+最终用户体验：
+
+```text
+1. 用户在 Cursor 中打开 LaTeX 论文项目。
+2. 用户运行 CiteBridge: Initialize Project。
+3. Cursor 扩展创建 papers/、refs.bib、.citebridge/ 等文件。
+4. 用户在 Zotero 中右键某篇或多篇文献。
+5. 点击 Send to Cursor Project。
+6. Zotero 插件把文献信息发送到当前 Cursor 项目。
+7. Cursor 扩展接收并导入文献，复制 PDF 到 papers/。
+8. 用户在 Cursor 左侧 CiteBridge 面板中看到该文献。
+9. 用户把文献从侧边栏拖入 .tex 正文。
+10. Cursor 自动插入 \citep{CiteKey}。
+11. 如果 refs.bib 中没有该条目，则自动追加 BibTeX。
+```
+
+---
+
+## 2. 项目边界
+
+### 2.1 必须实现
+
+MVP 版本必须实现：
+
+1. Cursor 扩展可安装到 Cursor。
+2. Cursor 扩展可初始化 LaTeX 项目。
+3. Cursor 扩展创建并维护：
+
+```text
+papers/
+refs.bib
+.citebridge/config.json
+.citebridge/index.json
+.citebridge/inbox/
+```
+
+4. Cursor 扩展可注册当前项目到全局项目表：
+
+```text
+~/.citebridge/projects.json
+```
+
+5. Zotero 插件可在文献右键菜单中显示：
+
+```text
+Send to Cursor Project
+```
+
+6. Zotero 插件可读取 Cursor 项目注册表，并把选中文献发送到目标项目。
+7. Cursor 扩展可从 `.citebridge/inbox/` 读取 Zotero 发来的 payload。
+8. Cursor 扩展可把文献显示在左侧 TreeView。
+9. Cursor 扩展可把文献拖入 `.tex` 文件，并插入：
+
+```latex
+\citep{xxx}
+```
+
+10. Cursor 扩展可在 `.bib` 中追加对应 BibTeX。
+11. Cursor 扩展必须做重复检测，避免重复写入 `.bib`。
+
+### 2.2 暂不实现
+
+MVP 版本暂不实现：
+
+1. 云同步。
+2. 多人协作。
+3. Overleaf 插件。
+4. 自动全文分析。
+5. 自动根据正文语义推荐文献。
+6. 复杂 BibTeX 格式化规则编辑器。
+7. 完整的 Zotero 双向同步。
+
+---
+
+## 3. 技术选型
+
+### 3.1 Monorepo
+
+使用 npm workspace 或 pnpm workspace。
+
+推荐目录结构：
+
+```text
+citebridge/
+├── package.json
+├── pnpm-workspace.yaml
+├── README.md
+├── docs/
+│   ├── protocol.md
+│   ├── cursor-extension.md
+│   └── zotero-plugin.md
+├── packages/
+│   ├── shared/
+│   │   ├── package.json
+│   │   └── src/
+│   │       ├── schema.ts
+│   │       ├── citekey.ts
+│   │       ├── bibtex.ts
+│   │       ├── paths.ts
+│   │       └── protocol.ts
+│   ├── cursor-extension/
+│   │   ├── package.json
+│   │   ├── tsconfig.json
+│   │   ├── src/
+│   │   │   ├── extension.ts
+│   │   │   ├── services/
+│   │   │   │   ├── projectService.ts
+│   │   │   │   ├── registryService.ts
+│   │   │   │   ├── inboxService.ts
+│   │   │   │   ├── importService.ts
+│   │   │   │   ├── zoteroApiService.ts
+│   │   │   │   ├── bibService.ts
+│   │   │   │   ├── latexService.ts
+│   │   │   │   ├── pdfService.ts
+│   │   │   │   └── citationDropProvider.ts
+│   │   │   ├── tree/
+│   │   │   │   ├── citationTreeProvider.ts
+│   │   │   │   ├── citationTreeItem.ts
+│   │   │   │   └── citationDragAndDropController.ts
+│   │   │   ├── commands/
+│   │   │   │   ├── initializeProject.ts
+│   │   │   │   ├── importFromInbox.ts
+│   │   │   │   ├── refreshLibrary.ts
+│   │   │   │   ├── insertCitation.ts
+│   │   │   │   └── openPaperPdf.ts
+│   │   │   └── types.ts
+│   │   └── media/
+│   └── zotero-plugin/
+│       ├── manifest.json
+│       ├── bootstrap.js
+│       ├── chrome.manifest
+│       ├── content/
+│       │   ├── citebridge.js
+│       │   └── citebridge.xhtml
+│       ├── locale/
+│       │   └── en-US/
+│       │       └── citebridge.ftl
+│       └── build/
+└── scripts/
+    ├── build-all.mjs
+    ├── package-cursor.mjs
+    └── package-zotero.mjs
+```
+
+### 3.2 Cursor 扩展技术栈
+
+使用：
+
+```text
+TypeScript
+VS Code Extension API
+Node.js fs/promises
+TreeView
+TreeDragAndDropController
+DocumentDropEditProvider
+WorkspaceEdit
+UriHandler
+FileSystemWatcher
+```
+
+打包格式：
+
+```text
+.vsix
+```
+
+### 3.3 Zotero 插件技术栈
+
+使用：
+
+```text
+Zotero 8 plugin API
+manifest.json
+bootstrap.js
+Zotero.MenuManager.registerMenu
+Zotero item API
+IOUtils / PathUtils
+```
+
+打包格式：
+
+```text
+.xpi
+```
+
+---
+
+## 4. 用户项目结构
+
+Cursor 扩展初始化后，在 LaTeX 项目根目录生成：
+
+```text
+paper-project/
+├── main.tex
+├── refs.bib
+├── papers/
+│   ├── Wang2025UDFNet.pdf
+│   └── Li2024RemoteCLIP.pdf
+└── .citebridge/
+    ├── config.json
+    ├── index.json
+    ├── inbox/
+    │   ├── 20260626-103000-ABCD1234.json
+    │   └── 20260626-103015-XYZ5678.json
+    └── items/
+        ├── Wang2025UDFNet.json
+        └── Li2024RemoteCLIP.json
+```
+
+`.citebridge/config.json` 示例：
+
+```json
+{
+  "version": 1,
+  "projectId": "paper-project-0f3a7e9c",
+  "projectName": "paper-project",
+  "bibFile": "refs.bib",
+  "papersDir": "papers",
+  "citeCommand": "citep",
+  "keyPattern": "AuthorYearTitle",
+  "copyPdf": true,
+  "zoteroLocalApi": {
+    "enabled": true,
+    "baseUrl": "http://localhost:23119/api"
+  },
+  "security": {
+    "projectToken": "random-32-byte-token"
+  }
+}
+```
+
+`.citebridge/index.json` 示例：
+
+```json
+{
+  "version": 1,
+  "items": [
+    {
+      "citekey": "Wang2025UDFNet",
+      "title": "Uncertainty-Aware Dynamic Fusion Network with Criss-Cross Attention for Multimodal Remote Sensing Land Cover Classification",
+      "authors": ["Wang, Haifeng", "Huang, Yanjie"],
+      "year": "2025",
+      "doi": "10.1016/j.inffus.2025.103249",
+      "zotero": {
+        "libraryType": "user",
+        "libraryId": "0",
+        "itemKey": "ABCD1234"
+      },
+      "bibFile": "refs.bib",
+      "pdf": "papers/Wang2025UDFNet.pdf",
+      "bibtexAdded": true,
+      "createdAt": "2026-06-26T10:30:00+08:00",
+      "updatedAt": "2026-06-26T10:30:00+08:00"
+    }
+  ]
+}
+```
+
+---
+
+## 5. 全局项目注册表
+
+Cursor 扩展需要把当前已初始化的 LaTeX 项目注册到用户级全局文件。
+
+路径：
+
+```text
+Windows: %USERPROFILE%\.citebridge\projects.json
+macOS:   ~/.citebridge/projects.json
+Linux:   ~/.citebridge/projects.json
+```
+
+示例：
+
+```json
+{
+  "version": 1,
+  "lastActiveProjectId": "paper-project-0f3a7e9c",
+  "projects": [
+    {
+      "projectId": "paper-project-0f3a7e9c",
+      "projectName": "paper-project",
+      "rootPath": "D:/Research/paper-project",
+      "bibFile": "refs.bib",
+      "papersDir": "papers",
+      "inboxDir": "D:/Research/paper-project/.citebridge/inbox",
+      "projectToken": "random-32-byte-token",
+      "lastActiveAt": "2026-06-26T10:30:00+08:00",
+      "cursorUri": "cursor://publisher.citebridge/import"
+    }
+  ]
+}
+```
+
+说明：
+
+1. Cursor 扩展在项目初始化时写入该注册表。
+2. Cursor 扩展激活时更新 `lastActiveProjectId` 和 `lastActiveAt`。
+3. Zotero 插件读取该注册表，从而知道可以把文献发送到哪个 Cursor 项目。
+4. 如果只有一个项目，Zotero 插件默认发送到该项目。
+5. 如果有多个项目，Zotero 插件弹出项目选择或生成子菜单。
+
+---
+
+## 6. Zotero → Cursor 通信协议
+
+### 6.1 推荐通信方式
+
+MVP 使用：
+
+```text
+文件 payload + URI 通知
+```
+
+流程：
+
+```text
+1. Cursor 扩展初始化项目，并把项目写入 ~/.citebridge/projects.json。
+2. Zotero 插件读取 ~/.citebridge/projects.json。
+3. 用户在 Zotero 右键文献，选择目标 Cursor 项目。
+4. Zotero 插件生成 payload JSON。
+5. Zotero 插件把 payload 写入目标项目的 .citebridge/inbox/。
+6. Zotero 插件尝试打开 Cursor URI 通知 Cursor。
+7. Cursor 扩展收到 URI 或通过 FileSystemWatcher 发现新 payload。
+8. Cursor 扩展导入该 payload。
+```
+
+这种方式比单纯 URI 更稳，因为 URI 不适合传输大量 JSON 或多个文献，也容易受到特殊字符影响。
+
+### 6.2 URI 格式
+
+URI 用于通知 Cursor 扩展有新 payload，而不是直接携带完整文献信息。
+
+格式：
+
+```text
+cursor://publisher.citebridge/import?projectId=paper-project-0f3a7e9c&requestId=20260626-103000-ABCD1234
+```
+
+注意：
+
+1. 在 Cursor 扩展中不要硬编码 `cursor://`。
+2. 使用 `vscode.env.uriScheme` 获取当前宿主的 URI scheme。
+3. Cursor 环境下通常应是 Cursor 自己的 scheme。
+4. VS Code 开发调试时可能是 `vscode://` 或 `vscode-insiders://`。
+
+### 6.3 Payload 文件格式
+
+文件名：
+
+```text
+.citebridge/inbox/{timestamp}-{requestId}.json
+```
+
+示例：
+
+```json
+{
+  "protocolVersion": 1,
+  "requestId": "20260626-103000-ABCD1234",
+  "action": "importItems",
+  "source": "zotero",
+  "createdAt": "2026-06-26T10:30:00+08:00",
+  "targetProjectId": "paper-project-0f3a7e9c",
+  "projectToken": "random-32-byte-token",
+  "items": [
+    {
+      "libraryType": "user",
+      "libraryId": "0",
+      "itemKey": "ABCD1234",
+      "itemType": "journalArticle",
+      "title": "Uncertainty-Aware Dynamic Fusion Network with Criss-Cross Attention for Multimodal Remote Sensing Land Cover Classification",
+      "creators": [
+        {
+          "creatorType": "author",
+          "firstName": "Haifeng",
+          "lastName": "Wang"
+        },
+        {
+          "creatorType": "author",
+          "firstName": "Yanjie",
+          "lastName": "Huang"
+        }
+      ],
+      "year": "2025",
+      "date": "2025",
+      "doi": "10.1016/j.inffus.2025.103249",
+      "publicationTitle": "Information Fusion",
+      "volume": "123",
+      "issue": "",
+      "pages": "103249",
+      "url": "",
+      "abstractNote": "",
+      "zoteroURI": "zotero://select/library/items/ABCD1234",
+      "attachments": [
+        {
+          "type": "pdf",
+          "title": "Full Text PDF",
+          "path": "D:/Zotero/storage/XXXX/paper.pdf",
+          "filename": "paper.pdf"
+        }
+      ],
+      "bibtex": null,
+      "preferredCitationKey": null
+    }
+  ]
+}
+```
+
+### 6.4 Payload 字段说明
+
+```text
+protocolVersion:
+  当前协议版本，MVP 固定为 1。
+
+requestId:
+  唯一请求 ID，用于幂等处理。
+
+action:
+  MVP 固定为 importItems。
+
+source:
+  固定为 zotero。
+
+targetProjectId:
+  目标 Cursor 项目 ID。
+
+projectToken:
+  从 ~/.citebridge/projects.json 读取，用于防止误投递。
+
+items:
+  Zotero 中选中的文献数组。
+
+bibtex:
+  可选。如果 Zotero 插件能直接生成 BibTeX，则填写；否则为 null，由 Cursor 扩展通过 Zotero Local API 获取。
+
+preferredCitationKey:
+  可选。如果 Zotero 或 Better BibTeX 能提供 citekey，则填写；否则 Cursor 扩展自动生成。
+```
+
+---
+
+## 7. Cursor 扩展功能设计
+
+### 7.1 package.json contribution points
+
+Cursor 扩展的 `package.json` 需要包含：
+
+```json
+{
+  "name": "citebridge-cursor",
+  "displayName": "CiteBridge for Cursor",
+  "description": "Drag Zotero papers into LaTeX documents and automatically maintain BibTeX references.",
+  "version": "0.1.0",
+  "publisher": "publisher",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onStartupFinished",
+    "onLanguage:latex",
+    "onCommand:citebridge.initializeProject",
+    "onCommand:citebridge.refreshLibrary",
+    "onCommand:citebridge.importFromInbox",
+    "onCommand:citebridge.insertCitation",
+    "onUri"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "citebridge.initializeProject",
+        "title": "CiteBridge: Initialize LaTeX Project"
+      },
+      {
+        "command": "citebridge.refreshLibrary",
+        "title": "CiteBridge: Refresh Library"
+      },
+      {
+        "command": "citebridge.importFromInbox",
+        "title": "CiteBridge: Import from Inbox"
+      },
+      {
+        "command": "citebridge.insertCitation",
+        "title": "CiteBridge: Insert Citation"
+      },
+      {
+        "command": "citebridge.openPaperPdf",
+        "title": "CiteBridge: Open Paper PDF"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "citebridge",
+          "title": "CiteBridge",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "citebridge": [
+        {
+          "id": "citebridge.libraryView",
+          "name": "Papers"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "CiteBridge",
+      "properties": {
+        "citebridge.defaultBibFile": {
+          "type": "string",
+          "default": "refs.bib"
+        },
+        "citebridge.defaultPapersDir": {
+          "type": "string",
+          "default": "papers"
+        },
+        "citebridge.defaultCiteCommand": {
+          "type": "string",
+          "default": "citep",
+          "enum": ["citep", "citet", "cite", "parencite", "textcite"]
+        },
+        "citebridge.copyPdf": {
+          "type": "boolean",
+          "default": true
+        },
+        "citebridge.zoteroLocalApiBaseUrl": {
+          "type": "string",
+          "default": "http://localhost:23119/api"
+        }
+      }
+    }
+  }
+}
+```
+
+### 7.2 Cursor 扩展模块职责
+
+#### 7.2.1 `extension.ts`
+
+负责激活扩展，注册命令、TreeView、拖拽、URI Handler、FileSystemWatcher。
+
+伪代码：
+
+```ts
+export async function activate(context: vscode.ExtensionContext) {
+  const services = createServices(context);
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("citebridge.initializeProject", () =>
+      initializeProject(services)
+    )
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("citebridge.refreshLibrary", () =>
+      services.tree.refresh()
+    )
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("citebridge.importFromInbox", () =>
+      services.inbox.importAll()
+    )
+  );
+
+  context.subscriptions.push(
+    vscode.window.registerUriHandler({
+      handleUri: async (uri) => {
+        await services.inbox.handleUri(uri);
+      }
+    })
+  );
+
+  const treeProvider = new CitationTreeProvider(services.project);
+  const dragController = new CitationDragAndDropController();
+
+  const treeView = vscode.window.createTreeView("citebridge.libraryView", {
+    treeDataProvider: treeProvider,
+    dragAndDropController: dragController
+  });
+
+  context.subscriptions.push(treeView);
+
+  context.subscriptions.push(
+    vscode.languages.registerDocumentDropEditProvider(
+      [{ language: "latex" }, { pattern: "**/*.tex" }],
+      new CitationDropProvider(services),
+      {
+        dropMimeTypes: [
+          "application/vnd.citebridge.item+json",
+          "text/uri-list",
+          "files"
+        ]
+      }
+    )
+  );
+
+  await services.project.autoDetectAndRegister();
+  await services.inbox.watch();
+}
+```
+
+#### 7.2.2 `projectService.ts`
+
+职责：
+
+1. 检测当前 workspace root。
+2. 判断是否已初始化 CiteBridge。
+3. 创建 `.citebridge/config.json`。
+4. 创建 `.citebridge/index.json`。
+5. 创建 `papers/`、`.citebridge/inbox/`、`.citebridge/items/`。
+6. 返回当前项目配置。
+
+初始化流程：
+
+```text
+1. 获取 workspaceFolders[0]。
+2. 如果没有 workspace，提示用户必须先打开一个项目文件夹。
+3. 检查当前项目是否存在 .tex 文件。
+4. 如果不存在 .tex 文件，允许继续，但给出提示。
+5. 让用户选择或输入 bib 文件名，默认 refs.bib。
+6. 如果 bib 文件不存在，则创建空文件。
+7. 创建 papers/。
+8. 创建 .citebridge/。
+9. 生成 projectId。
+10. 生成 projectToken。
+11. 写入 .citebridge/config.json。
+12. 写入 .citebridge/index.json。
+13. 调用 registryService 注册项目。
+```
+
+#### 7.2.3 `registryService.ts`
+
+职责：
+
+1. 读写 `~/.citebridge/projects.json`。
+2. 注册当前项目。
+3. 更新 `lastActiveProjectId`。
+4. 清理不存在的项目路径。
+5. 为 Zotero 插件提供项目发现入口。
+
+需要处理 Windows/macOS/Linux 路径差异。
+
+#### 7.2.4 `inboxService.ts`
+
+职责：
+
+1. 监听 `.citebridge/inbox/*.json`。
+2. 解析 payload。
+3. 校验 payload。
+4. 调用 `importService.importPayload()`。
+5. 成功导入后，将 payload 移动到：
+
+```text
+.citebridge/inbox/processed/
+```
+
+6. 失败则移动到：
+
+```text
+.citebridge/inbox/failed/
+```
+
+并写入错误信息。
+
+幂等规则：
+
+```text
+如果 requestId 已处理过，则跳过。
+如果 itemKey + libraryId 已导入过，则更新 metadata，不重复添加。
+如果 DOI 已存在，则复用已有 citekey。
+```
+
+#### 7.2.5 `importService.ts`
+
+职责：
+
+1. 导入 Zotero payload。
+2. 获取或生成 BibTeX。
+3. 获取或生成 citekey。
+4. 复制 PDF。
+5. 写入 `.citebridge/items/{citekey}.json`。
+6. 更新 `.citebridge/index.json`。
+7. 刷新 TreeView。
+
+导入优先级：
+
+```text
+BibTeX 获取优先级：
+1. payload.items[].bibtex
+2. Zotero Local API: /api/users/0/items/{itemKey}?format=bibtex
+3. 由 metadata 手动生成最小 BibTeX
+
+citekey 获取优先级：
+1. payload.items[].preferredCitationKey
+2. BibTeX entry key
+3. Better BibTeX JSON-RPC，如果可用
+4. Cursor 扩展内部规则生成
+```
+
+#### 7.2.6 `zoteroApiService.ts`
+
+职责：
+
+1. 调用 Zotero Local API。
+2. 根据 `libraryType`、`libraryId`、`itemKey` 拉取 JSON 或 BibTeX。
+3. 判断 Zotero 是否运行。
+4. 判断本地 API 是否可访问。
+5. 对失败给出友好提示。
+
+API 路径规则：
+
+```text
+用户库：
+http://localhost:23119/api/users/0/items/{itemKey}
+
+群组库：
+http://localhost:23119/api/groups/{groupId}/items/{itemKey}
+```
+
+获取 BibTeX：
+
+```text
+{baseUrl}/users/0/items/{itemKey}?format=bibtex
+```
+
+获取 JSON：
+
+```text
+{baseUrl}/users/0/items/{itemKey}?format=json&include=data
+```
+
+注意：
+
+1. MVP 可先只支持用户库 `users/0`。
+2. 群组库作为第二阶段功能。
+3. 如果 Zotero Local API 不可用，使用 payload 中的 metadata 生成 BibTeX。
+
+#### 7.2.7 `bibService.ts`
+
+职责：
+
+1. 读取 `.bib`。
+2. 判断 citekey 是否存在。
+3. 判断 DOI 是否存在。
+4. 判断 title + year 是否近似存在。
+5. 追加 BibTeX。
+6. 清洗 BibTeX 字段。
+7. 避免破坏已有 `.bib` 格式。
+
+重复检测优先级：
+
+```text
+1. DOI 完全匹配。
+2. Zotero itemKey 已记录在 .citebridge/index.json。
+3. citekey 已存在。
+4. title + year 近似匹配。
+```
+
+如果发现 DOI 已存在但 citekey 不同：
+
+```text
+1. 使用 .bib 中已有 citekey。
+2. 更新 .citebridge/index.json。
+3. 不重复追加 BibTeX。
+```
+
+BibTeX 清洗规则：
+
+保留常用字段：
+
+```text
+author
+title
+journal
+booktitle
+conference
+volume
+number
+pages
+year
+doi
+url
+publisher
+edition
+```
+
+MVP 不要过度清洗，避免误删重要字段。
+
+#### 7.2.8 `citekey.ts`
+
+默认生成规则：
+
+```text
+AuthorYearTitleKeyword
+```
+
+示例：
+
+```text
+Wang2025UDFNet
+Li2024RemoteCLIP
+Zhang2023SemanticSegmentation
+```
+
+规则：
+
+```text
+1. 取第一作者 lastName。
+2. 取年份。
+3. 从标题中取第一个有意义的词。
+4. 如果标题中包含大写缩写，如 UDFNet、CLIP、SAM、RSI，则优先使用。
+5. 移除空格、标点、LaTeX 特殊字符。
+6. 如果 citekey 冲突，则添加 A、B、C。
+```
+
+#### 7.2.9 `pdfService.ts`
+
+职责：
+
+1. 根据 Zotero 附件路径复制 PDF。
+2. 目标路径为：
+
+```text
+papers/{citekey}.pdf
+```
+
+3. 如果已存在，则不覆盖，除非文件大小不同且用户确认。
+4. 如果路径无法访问，则只导入元数据。
+
+#### 7.2.10 `latexService.ts`
+
+职责：
+
+1. 生成引用命令。
+2. 支持多种引用命令：
+
+```latex
+\citep{key}
+\citet{key}
+\cite{key}
+\parencite{key}
+\textcite{key}
+```
+
+3. 默认使用配置中的 `citeCommand`。
+4. 支持多选文献拖拽：
+
+```latex
+\citep{Key1, Key2, Key3}
+```
+
+#### 7.2.11 `citationTreeProvider.ts`
+
+侧边栏显示结构：
+
+```text
+CiteBridge
+├── Imported Papers
+│   ├── Wang2025UDFNet
+│   ├── Li2024RemoteCLIP
+│   └── Zhang2023RefSeg
+├── Not in refs.bib
+├── Missing PDF
+└── Recently Imported
+```
+
+每个条目显示：
+
+```text
+label: citekey
+description: year + journal
+tooltip: title + authors + doi
+```
+
+右键菜单：
+
+```text
+Insert Citation
+Open PDF
+Open Zotero Item
+Copy Citekey
+Add/Update BibTeX
+Remove from Project
+```
+
+#### 7.2.12 `citationDragAndDropController.ts`
+
+TreeView 拖拽时写入 DataTransfer：
+
+```ts
+dataTransfer.set(
+  "application/vnd.citebridge.item+json",
+  new vscode.DataTransferItem(JSON.stringify({
+    projectId,
+    citekeys: ["Wang2025UDFNet"]
+  }))
+);
+```
+
+同时写入 `text/uri-list` 作为兼容方案：
+
+```text
+citebridge-item://paper-project-0f3a7e9c/Wang2025UDFNet
+```
+
+#### 7.2.13 `citationDropProvider.ts`
+
+当用户把文献拖入 `.tex` 文件时：
+
+```text
+1. 解析 DataTransfer。
+2. 获取 citekey。
+3. 检查 refs.bib。
+4. 如果 refs.bib 中缺少该条目，则追加 BibTeX。
+5. 返回 DocumentDropEdit，插入 \citep{citekey}。
+6. 保存 .citebridge/index.json。
+```
+
+插入示例：
+
+```latex
+\citep{Wang2025UDFNet}
+```
+
+如果用户拖拽多个文献：
+
+```latex
+\citep{Wang2025UDFNet, Li2024RemoteCLIP}
+```
+
+---
+
+## 8. Zotero 插件功能设计
+
+### 8.1 manifest.json
+
+示例：
+
+```json
+{
+  "manifest_version": 2,
+  "name": "CiteBridge for Zotero",
+  "version": "0.1.0",
+  "description": "Send Zotero references to Cursor LaTeX projects.",
+  "author": "CiteBridge",
+  "applications": {
+    "zotero": {
+      "id": "citebridge@zotero.org",
+      "strict_min_version": "8.0",
+      "strict_max_version": "8.*"
+    }
+  }
+}
+```
+
+如果需要兼容 Zotero 7，可将 `strict_min_version` 调整为 `7.0`，但 MVP 建议优先支持 Zotero 8。
+
+### 8.2 bootstrap.js
+
+职责：
+
+```text
+1. startup 时注册菜单。
+2. shutdown 时注销菜单。
+3. install/uninstall 可为空。
+```
+
+伪代码：
+
+```js
+var CiteBridge = {
+  pluginID: "citebridge@zotero.org",
+  registeredMenuID: null,
+
+  async startup({ id, version, rootURI }, reason) {
+    this.pluginID = id;
+    await this.registerMenus();
+  },
+
+  async shutdown({ id, version, rootURI }, reason) {
+    if (this.registeredMenuID) {
+      Zotero.MenuManager.unregisterMenu(this.registeredMenuID);
+    }
+  },
+
+  async registerMenus() {
+    this.registeredMenuID = Zotero.MenuManager.registerMenu({
+      menuID: "citebridge-send-to-cursor",
+      pluginID: this.pluginID,
+      target: "main/library/item",
+      menus: [
+        {
+          menuType: "menuitem",
+          label: "Send to Cursor Project",
+          onShowing: (event, context) => {
+            context.setVisible(
+              context.items?.some(item => item.isRegularItem())
+            );
+          },
+          onCommand: async (event, context) => {
+            await CiteBridge.sendSelectedItems(context.items);
+          }
+        }
+      ]
+    });
+  }
+};
+```
+
+### 8.3 Zotero 插件主流程
+
+`sendSelectedItems(items)`：
+
+```text
+1. 过滤 regular items。
+2. 读取 ~/.citebridge/projects.json。
+3. 如果没有项目，提示用户先在 Cursor 中初始化 CiteBridge 项目。
+4. 如果只有一个项目，直接使用。
+5. 如果有多个项目，让用户选择。
+6. 构造 payload。
+7. 写入 project.inboxDir。
+8. 调用 Cursor URI 通知。
+9. 弹出成功提示。
+```
+
+### 8.4 项目选择逻辑
+
+MVP 可简化：
+
+```text
+1. 如果 projects.json 中存在 lastActiveProjectId，则默认发给 lastActiveProjectId。
+2. 菜单项命名为 Send to Last Active Cursor Project。
+3. 第二阶段再做多项目选择弹窗。
+```
+
+增强版：
+
+```text
+Send to Cursor Project
+├── paper-project
+├── thesis-project
+└── Select Project...
+```
+
+### 8.5 Zotero 文献字段提取
+
+每个 Zotero item 提取：
+
+```js
+{
+  libraryType,
+  libraryId,
+  itemKey,
+  itemType,
+  title,
+  creators,
+  date,
+  year,
+  doi,
+  publicationTitle,
+  volume,
+  issue,
+  pages,
+  url,
+  abstractNote,
+  zoteroURI,
+  attachments
+}
+```
+
+字段来源：
+
+```text
+item.key
+item.libraryID
+item.itemType
+item.getField("title")
+item.getField("DOI")
+item.getField("publicationTitle")
+item.getField("volume")
+item.getField("issue")
+item.getField("pages")
+item.getField("url")
+item.getField("abstractNote")
+item.getCreators()
+```
+
+年份提取：
+
+```text
+优先从 date 中提取 4 位年份。
+如果 date 为空，则留空。
+```
+
+附件提取：
+
+```text
+1. item.getAttachments()
+2. 遍历 attachment item
+3. 判断 contentType 是否为 application/pdf，或文件名是否以 .pdf 结尾
+4. 获取本地文件路径
+```
+
+如果无法获取附件路径：
+
+```text
+attachments: []
+```
+
+### 8.6 Zotero 插件写入 payload
+
+写入路径：
+
+```text
+{project.inboxDir}/{timestamp}-{requestId}.json
+```
+
+写入后调用 Cursor URI：
+
+```text
+{project.cursorUri}?projectId={projectId}&requestId={requestId}
+```
+
+如果 URI 调用失败，也不应视为发送失败，因为 Cursor 扩展还可以通过 FileSystemWatcher 检测 inbox 文件。
+
+---
+
+## 9. BibTeX 生成策略
+
+### 9.1 优先使用 Zotero / Local API BibTeX
+
+Cursor 扩展导入文献时，优先调用：
+
+```text
+http://localhost:23119/api/users/0/items/{itemKey}?format=bibtex
+```
+
+如果成功，直接获得 BibTeX。
+
+### 9.2 兜底生成最小 BibTeX
+
+如果 Local API 不可用，则根据 payload metadata 生成：
+
+```bibtex
+@article{Wang2025UDFNet,
+  author  = {Wang, Haifeng and Huang, Yanjie},
+  title   = {Uncertainty-Aware Dynamic Fusion Network with Criss-Cross Attention for Multimodal Remote Sensing Land Cover Classification},
+  journal = {Information Fusion},
+  volume  = {123},
+  pages   = {103249},
+  year    = {2025},
+  doi     = {10.1016/j.inffus.2025.103249}
+}
+```
+
+类型映射：
+
+```text
+journalArticle -> @article
+conferencePaper -> @inproceedings
+book -> @book
+bookSection -> @incollection
+thesis -> @phdthesis or @mastersthesis
+preprint -> @misc
+report -> @techreport
+webpage -> @misc
+default -> @misc
+```
+
+### 9.3 BibTeX 追加格式
+
+追加时保留空行：
+
+```bibtex
+
+@article{Key,
+  ...
+}
+```
+
+不要重排用户原有 `.bib` 文件。
+
+---
+
+## 10. 安全与鲁棒性
+
+### 10.1 Payload 校验
+
+Cursor 扩展导入 payload 前必须校验：
+
+```text
+1. protocolVersion 是否为 1。
+2. action 是否为 importItems。
+3. targetProjectId 是否等于当前项目 projectId。
+4. projectToken 是否等于 config.json 中的 projectToken。
+5. items 是否为非空数组。
+6. itemKey 是否存在。
+```
+
+### 10.2 路径安全
+
+处理附件路径时：
+
+```text
+1. 不允许路径穿越。
+2. 只复制本地 PDF。
+3. 不执行任何 payload 中的命令。
+4. 不加载远程脚本。
+5. 不信任 payload 中的 bibFile 路径。
+6. 所有写入路径必须限制在当前 workspace root 内。
+```
+
+### 10.3 幂等处理
+
+记录已处理 requestId：
+
+```json
+{
+  "processedRequests": [
+    "20260626-103000-ABCD1234"
+  ]
+}
+```
+
+如果同一个 payload 被处理两次，第二次直接跳过。
+
+---
+
+## 11. 安装与打包
+
+### 11.1 Cursor 扩展打包
+
+在 `packages/cursor-extension` 中：
+
+```bash
+pnpm install
+pnpm build
+pnpm package
+```
+
+使用 `@vscode/vsce` 生成：
+
+```text
+citebridge-cursor-0.1.0.vsix
+```
+
+用户安装方式：
+
+```text
+Cursor → Extensions → Install from VSIX...
+```
+
+### 11.2 Zotero 插件打包
+
+在 `packages/zotero-plugin` 中：
+
+```bash
+pnpm build:zotero
+```
+
+生成：
+
+```text
+citebridge-zotero-0.1.0.xpi
+```
+
+安装方式：
+
+```text
+Zotero → Tools → Add-ons → Install Add-on From File...
+```
+
+---
+
+## 12. 开发阶段划分
+
+### Phase 1：Cursor 扩展基础
+
+实现：
+
+```text
+1. 初始化项目。
+2. 生成 .citebridge/config.json。
+3. 生成 .citebridge/index.json。
+4. 生成 papers/ 和 refs.bib。
+5. 写入 ~/.citebridge/projects.json。
+6. TreeView 显示 index.json 中的文献。
+```
+
+验收：
+
+```text
+在 Cursor 中运行 CiteBridge: Initialize LaTeX Project 后，项目结构正确生成，全局 projects.json 中能看到该项目。
+```
+
+### Phase 2：Inbox 导入
+
+实现：
+
+```text
+1. 监听 .citebridge/inbox/。
+2. 支持手动运行 CiteBridge: Import from Inbox。
+3. 能读取 payload。
+4. 能把 payload item 写入 index.json。
+5. 能复制 PDF 到 papers/。
+```
+
+验收：
+
+```text
+手动放入一个 payload JSON 后，Cursor 扩展能导入文献并显示在侧边栏。
+```
+
+### Phase 3：BibTeX 维护
+
+实现：
+
+```text
+1. 通过 Zotero Local API 获取 BibTeX。
+2. 如果失败，则根据 metadata 生成最小 BibTeX。
+3. 写入 refs.bib。
+4. 去重检测。
+```
+
+验收：
+
+```text
+导入文献后，refs.bib 中出现对应 BibTeX，重复导入不会重复追加。
+```
+
+### Phase 4：拖拽插入引用
+
+实现：
+
+```text
+1. TreeView 文献可拖拽。
+2. 拖入 .tex 正文后插入 \citep{key}。
+3. 多选拖拽插入 \citep{key1, key2}。
+4. 插入前确保 refs.bib 中已有条目。
+```
+
+验收：
+
+```text
+用户把侧边栏文献拖入 main.tex，正文出现正确 citation。
+```
+
+### Phase 5：Zotero 插件
+
+实现：
+
+```text
+1. Zotero 右键菜单。
+2. 读取 ~/.citebridge/projects.json。
+3. 获取当前选中的 Zotero item。
+4. 构造 payload。
+5. 写入目标项目 inbox。
+6. 通知 Cursor URI。
+```
+
+验收：
+
+```text
+用户在 Zotero 中右键文献，点击 Send to Cursor Project 后，Cursor 项目中出现文献。
+```
+
+### Phase 6：完善用户体验
+
+实现：
+
+```text
+1. 错误提示。
+2. 多项目选择。
+3. 打开 PDF。
+4. 打开 Zotero item。
+5. 复制 citekey。
+6. 支持修改默认引用命令。
+```
+
+---
+
+## 13. 测试方案
+
+### 13.1 单元测试
+
+测试模块：
+
+```text
+shared/citekey.ts
+shared/bibtex.ts
+shared/protocol.ts
+shared/paths.ts
+cursor-extension/bibService.ts
+cursor-extension/importService.ts
+cursor-extension/latexService.ts
+```
+
+必须测试：
+
+```text
+1. citekey 生成。
+2. citekey 冲突处理。
+3. DOI 去重。
+4. BibTeX key 解析。
+5. payload schema 校验。
+6. Windows 路径处理。
+7. macOS/Linux 路径处理。
+```
+
+### 13.2 集成测试
+
+使用 mock payload：
+
+```json
+{
+  "protocolVersion": 1,
+  "requestId": "test-001",
+  "action": "importItems",
+  "source": "zotero",
+  "targetProjectId": "test-project",
+  "projectToken": "test-token",
+  "items": [
+    {
+      "libraryType": "user",
+      "libraryId": "0",
+      "itemKey": "ABCD1234",
+      "itemType": "journalArticle",
+      "title": "Test Paper Title",
+      "creators": [
+        {
+          "creatorType": "author",
+          "firstName": "Alice",
+          "lastName": "Wang"
+        }
+      ],
+      "year": "2025",
+      "doi": "10.0000/test",
+      "publicationTitle": "Test Journal",
+      "volume": "1",
+      "pages": "1-10",
+      "attachments": [],
+      "bibtex": null,
+      "preferredCitationKey": null
+    }
+  ]
+}
+```
+
+验收结果：
+
+```text
+1. index.json 增加文献。
+2. refs.bib 增加 BibTeX。
+3. TreeView 显示文献。
+4. 拖入 .tex 后插入 \citep{Wang2025Test} 或类似 key。
+```
+
+### 13.3 手动测试
+
+测试场景：
+
+```text
+1. 只安装 Cursor 扩展，不安装 Zotero 插件。
+2. 安装两个插件。
+3. Zotero 未运行。
+4. Zotero Local API 未开启。
+5. 文献没有 PDF。
+6. 文献没有 DOI。
+7. 重复发送同一篇文献。
+8. refs.bib 中已有同 DOI 文献但 citekey 不同。
+9. 多个 Cursor 项目同时存在。
+10. Windows 路径中包含空格和中文。
+```
+
+---
+
+## 14. 验收标准
+
+MVP 完成标准：
+
+```text
+1. Cursor 扩展可以成功打包为 .vsix。
+2. Zotero 插件可以成功打包为 .xpi。
+3. Cursor 中可以初始化 LaTeX 项目。
+4. Zotero 中可以右键发送文献到 Cursor 项目。
+5. Cursor 能接收并导入 Zotero 文献。
+6. Cursor 能复制 PDF 到 papers/。
+7. Cursor 能维护 refs.bib。
+8. Cursor 能在侧边栏显示文献。
+9. 用户拖拽文献到 .tex 后能插入 \citep{key}。
+10. 同一文献重复导入不会导致 refs.bib 重复条目。
+```
+
+---
+
+## 15. Codex 实现要求
+
+请按以下原则实现：
+
+```text
+1. 优先完成 MVP 闭环，不要一开始做复杂 UI。
+2. 先实现 Cursor 扩展，再实现 Zotero 插件。
+3. shared 包中放协议、路径、citekey、BibTeX 工具函数。
+4. 所有文件写入必须使用异步 API。
+5. 所有 JSON 写入必须格式化为 2 spaces。
+6. 所有错误必须有用户可读提示。
+7. 不要破坏用户已有 .bib 文件。
+8. 不要覆盖用户已有 PDF。
+9. 不要把 Zotero 插件设计成直接修改 .tex。
+10. Cursor 扩展是唯一负责修改 .tex 和 .bib 的模块。
+```
+
+优先实现顺序：
+
+```text
+1. packages/shared
+2. packages/cursor-extension 初始化项目
+3. packages/cursor-extension inbox 导入
+4. packages/cursor-extension BibTeX 写入
+5. packages/cursor-extension TreeView
+6. packages/cursor-extension 拖拽插入
+7. packages/zotero-plugin 右键发送
+8. 打包脚本
+9. README 和使用说明
+```
+
+---
+
+## 16. README 需要包含的内容
+
+README 至少包括：
+
+```text
+1. CiteBridge 是什么。
+2. 安装 Cursor 扩展的方法。
+3. 安装 Zotero 插件的方法。
+4. 如何初始化 LaTeX 项目。
+5. 如何从 Zotero 发送文献。
+6. 如何拖拽插入引用。
+7. 如何修改默认引用命令。
+8. 常见问题：
+   - Zotero 中看不到 Cursor 项目怎么办？
+   - Cursor 中没有收到文献怎么办？
+   - refs.bib 没有更新怎么办？
+   - PDF 没有复制怎么办？
+   - 如何处理重复 citekey？
+```
+
+---
+
+## 17. 未来增强功能
+
+MVP 完成后可以扩展：
+
+```text
+1. 支持 Better BibTeX citekey。
+2. 支持用户自定义 citekey 模板。
+3. 支持 BibLaTeX。
+4. 支持 citation preview。
+5. 支持正文中 citekey 自动补全。
+6. 支持 unused references 检测。
+7. 支持 cited references 统计。
+8. 支持从 papers/ 文件夹直接导入 PDF。
+9. 支持 DOI / Crossref 自动补全文献。
+10. 支持批量同步 Zotero collection 到 Cursor 项目。
+```
+
+---
+
+## 18. 关键设计原则
+
+整个项目最重要的原则：
+
+```text
+Zotero 负责管理文献源数据；
+Cursor 负责管理论文项目；
+通信协议只负责传递导入请求；
+.tex 和 .bib 只能由 Cursor 扩展修改。
+```
+
+不要让 Zotero 插件直接写 `.tex` 或 `.bib`，否则会导致当前编辑器位置、项目选择、BibTeX 去重、citekey 冲突等问题难以管理。
+
+最终目标是实现：
+
+```text
+Zotero 右键发送文献 → Cursor 项目接收文献 → 拖拽插入引用 → 自动维护 BibTeX
+```
