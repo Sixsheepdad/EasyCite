@@ -1,4 +1,6 @@
-﻿# CiteBridge 安装与使用
+﻿![CiteBridge](../docs/Notes_260629_102411-1.png)
+
+# CiteBridge 安装与使用
 
 CiteBridge 用来连接 Zotero 和 Cursor / VS Code 中的 LaTeX 项目。它由两个插件组成：
 

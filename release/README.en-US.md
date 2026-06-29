@@ -1,4 +1,6 @@
-﻿# CiteBridge Installation and Usage
+﻿![CiteBridge](../docs/Notes_260629_102411-1.png)
+
+# CiteBridge Installation and Usage
 
 CiteBridge connects Zotero with Cursor / VS Code LaTeX projects. It consists of two installable plugins:
 
