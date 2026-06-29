@@ -1,14 +1,14 @@
-# CiteBridge 安装与使用
+﻿# CiteBridge 安装与使用
 
 CiteBridge 用来连接 Zotero 和 Cursor / VS Code 中的 LaTeX 项目。它由两个插件组成：
 
-- `citebridge-cursor-0.1.3.vsix`：安装到 Cursor 或 VS Code，用于初始化 LaTeX 项目、接收 Zotero 文献、维护 `refs.bib`、显示 CiteBridge 文献面板，并支持拖拽插入引用。
+- `citebridge-cursor-0.1.4.vsix`：安装到 Cursor 或 VS Code，用于初始化 LaTeX 项目、接收 Zotero 文献、维护 `refs.bib`、显示 CiteBridge 文献面板，并支持拖拽插入引用。
 - `citebridge-zotero-0.1.5.xpi`：安装到 Zotero，用于在文献右键菜单中添加 `Send to Cursor Project`，把选中文献发送给当前激活的 LaTeX 项目。
 
 ## 文件
 
 ```text
-citebridge-cursor-0.1.3.vsix
+citebridge-cursor-0.1.4.vsix
 citebridge-zotero-0.1.5.xpi
 README.zh-CN.md
 README.en-US.md
@@ -19,7 +19,7 @@ README.en-US.md
 1. 打开 Cursor 或 VS Code。
 2. 打开 Extensions 面板。
 3. 选择 `Install from VSIX...`。
-4. 选择 `citebridge-cursor-0.1.3.vsix`。
+4. 选择 `citebridge-cursor-0.1.4.vsix`。
 5. 安装完成后重启编辑器。
 
 ## 安装 Zotero 插件
@@ -129,7 +129,7 @@ CiteBridge: Import from Inbox
 
 如果拖拽后没有插入引用：
 
-- 确认已安装 `citebridge-cursor-0.1.3.vsix`
+- 确认已安装 `citebridge-cursor-0.1.4.vsix`
 - 重启 Cursor 或 VS Code
 - 确认拖入的是 `.tex` 文件正文区域
 

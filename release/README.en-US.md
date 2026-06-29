@@ -1,14 +1,14 @@
-# CiteBridge Installation and Usage
+﻿# CiteBridge Installation and Usage
 
 CiteBridge connects Zotero with Cursor / VS Code LaTeX projects. It consists of two installable plugins:
 
-- `citebridge-cursor-0.1.3.vsix`: install this in Cursor or VS Code. It initializes LaTeX projects, receives Zotero items, maintains `refs.bib`, shows the CiteBridge paper panel, and lets you drag citations into `.tex` files.
+- `citebridge-cursor-0.1.4.vsix`: install this in Cursor or VS Code. It initializes LaTeX projects, receives Zotero items, maintains `refs.bib`, shows the CiteBridge paper panel, and lets you drag citations into `.tex` files.
 - `citebridge-zotero-0.1.5.xpi`: install this in Zotero. It adds `Send to Cursor Project` to the item context menu and sends selected references to the currently activated LaTeX project.
 
 ## Files
 
 ```text
-citebridge-cursor-0.1.3.vsix
+citebridge-cursor-0.1.4.vsix
 citebridge-zotero-0.1.5.xpi
 README.zh-CN.md
 README.en-US.md
@@ -19,7 +19,7 @@ README.en-US.md
 1. Open Cursor or VS Code.
 2. Open the Extensions panel.
 3. Choose `Install from VSIX...`.
-4. Select `citebridge-cursor-0.1.3.vsix`.
+4. Select `citebridge-cursor-0.1.4.vsix`.
 5. Restart the editor after installation.
 
 ## Install the Zotero Plugin
@@ -123,7 +123,7 @@ If the paper does not appear in the CiteBridge panel:
 
 If drag-and-drop does not insert a citation:
 
-- Make sure `citebridge-cursor-0.1.3.vsix` is installed
+- Make sure `citebridge-cursor-0.1.4.vsix` is installed
 - Restart Cursor or VS Code
 - Drag into the body area of a `.tex` editor
 

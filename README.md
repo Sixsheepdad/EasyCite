@@ -1,4 +1,4 @@
-# CiteBridge
+﻿# CiteBridge
 
 CiteBridge connects Zotero references to Cursor LaTeX projects. Zotero sends selected items into the active Cursor project, and the Cursor extension imports metadata, copies PDFs, maintains `refs.bib`, shows papers in a sidebar, and lets you drag citations into `.tex` files.
 
@@ -33,7 +33,7 @@ The Cursor package is created from `packages/cursor-extension`; the Zotero packa
 1. Build or package the extension.
 2. In Cursor, open Extensions.
 3. Choose `Install from VSIX...`.
-4. Install the generated `citebridge-cursor-0.1.3.vsix`.
+4. Install the generated `citebridge-cursor-0.1.4.vsix`.
 
 Open a LaTeX project folder in Cursor and run:
 

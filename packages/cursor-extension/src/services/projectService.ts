@@ -76,7 +76,8 @@ export class ProjectService {
     const rootPath = this.workspaceRoot();
     if (!rootPath) return undefined;
     try {
-      const config = await readJson<CiteBridgeConfig>(configPath(rootPath), undefined as unknown as CiteBridgeConfig);
+      const config = await readJson<CiteBridgeConfig | undefined>(configPath(rootPath), undefined);
+      if (!isCiteBridgeConfig(config)) return undefined;
       const index = await readJson<CiteBridgeIndex>(indexPath(rootPath), { version: 1, processedRequests: [], items: [] });
       return { rootPath, config, index };
     } catch {
@@ -117,4 +118,20 @@ export class ProjectService {
       await writeJson(indexPath(rootPath), fallback);
     }
   }
+}
+
+function isCiteBridgeConfig(value: unknown): value is CiteBridgeConfig {
+  if (!value || typeof value !== "object") return false;
+  const config = value as Partial<CiteBridgeConfig>;
+  return (
+    config.version === 1 &&
+    typeof config.projectId === "string" &&
+    typeof config.projectName === "string" &&
+    typeof config.bibFile === "string" &&
+    typeof config.papersDir === "string" &&
+    typeof config.citeCommand === "string" &&
+    typeof config.copyPdf === "boolean" &&
+    !!config.security &&
+    typeof config.security.projectToken === "string"
+  );
 }

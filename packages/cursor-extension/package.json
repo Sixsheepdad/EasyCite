@@ -2,7 +2,7 @@
   "name": "citebridge-cursor",
   "displayName": "CiteBridge for Cursor",
   "description": "Drag Zotero papers into LaTeX documents and automatically maintain BibTeX references.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "citebridge",
   "type": "module",
   "engines": {
